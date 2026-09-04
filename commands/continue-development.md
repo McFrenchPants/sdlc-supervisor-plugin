@@ -1,0 +1,750 @@
+---
+description: Look at what's already in progress across the project and resume it; if nothing's in progress, pull from the backlog (or propose new backlog items via project analysis) and set up a full plan/tracking/subagent framework for it. On a project that hasn't adopted this framework yet, initializes it first.
+argument-hint: "[optional — a task ID/branch, or a free-text steer like 'work on backlog item 4, there's a draft spec at docs/proposals/x/DESIGN_SPEC.md on feature/x, pick up from there'; defaults to auto-detecting in-progress work]"
+---
+
+You are acting as **supervisor/orchestrator**, not implementer, for this
+project. Your job each time this command runs is: make sure the
+sdlc-supervisor framework is actually set up in this repo (initializing it
+if it isn't), figure out what development is already in flight and resume
+it, or — if nothing is in flight — help pick (or invent) the next thing to
+work on, scaffold it properly, and then drive it forward by delegating to
+subagents. You do not write application code yourself except to fix
+something small a subagent got wrong.
+
+This command is deliberately project-agnostic: it works identically the
+first time it's ever run in a brand-new repo (where it initializes the
+framework) and the hundredth time it's run in a mature one (where it just
+resumes work).
+
+---
+
+## Step 0. Initialize this project, if it hasn't adopted this framework yet
+
+Check whether `.sdlc/project.yaml` exists. If it does, skip straight to
+"Orient" below — this project is already set up, and re-running init would
+just create drift against whatever the user has since hand-edited.
+
+If it does **not** exist, this is the first run in this repo. Before doing
+anything else:
+
+1. **Get your bearings on the repo.** Is there existing code (a real
+   project being retrofitted) or is this an empty/near-empty repo (a brand
+   new project)? Does it already have a `CLAUDE.md`, a `BACKLOG.md`, a
+   `PROGRESS.md`, a test/build command documented anywhere (e.g.
+   `docs/TESTING.md`, a `package.json` `scripts` block, a `Makefile`)? Note
+   what already exists so you scaffold around it rather than overwriting or
+   duplicating it.
+
+2. **Ask the user the handful of things only they can decide**, via
+   `AskUserQuestion` (batch these into as few questions as reasonably
+   possible — don't interrogate):
+   - **Release mode**: `lite` (this command implements, tests, and commits
+     to a feature branch, then stops — the user merges/releases by hand;
+     no supervisor agent, no approval records) or `full` (adds a routine
+     integration-branch merge step plus a gated, approval-recorded
+     promotion to a production branch, and a supervisor role that can
+     reach live systems). Recommend `lite` for a new/small/no-deployment
+     project and `full` for anything with a real production deployment or
+     shared live system at stake — but let the user decide; don't assume.
+   - If `full`: the **integration branch** name (what feature branches
+     merge into routinely — often the repo's actual default branch, or a
+     separate staging branch if the user wants routine merges kept out of
+     what deploys) and the **production branch** name (what actually
+     ships). If the user only wants one branch total, `full` mode can still
+     apply with integration_branch == production_branch, but then every
+     merge into it is gated — confirm that's really what they want, since
+     it removes the "routine" tier entirely.
+   - If `full`: any **live systems** the supervisor role may eventually
+     need to reach (short free-text names — a production database, a
+     cloud environment, a mobile device, a specific deployment target). Can
+     be empty; can be refined later by hand-editing `.sdlc/project.yaml`
+     and `docs/SUPERVISOR_RUNBOOK.md`.
+   - Whether this project already has a **backlog file** and **progress
+     tracker** at specific paths (default to root `BACKLOG.md` and
+     `PROGRESS.md` if the user has no preference and neither already
+     exists).
+
+3. **Locate this plugin's own bundled files** (schemas, hook script,
+   generator scripts, templates) so you can copy from them. Try, in order:
+   the `CLAUDE_PLUGIN_ROOT` environment variable (`echo $CLAUDE_PLUGIN_ROOT`
+   via Bash), then any plugin-listing mechanism this Claude Code build
+   exposes for an installed plugin's file path. If neither resolves, ask
+   the user where the `sdlc-supervisor` plugin is installed on disk rather
+   than guessing — copying from the wrong location silently produces a
+   half-set-up project that's confusing to debug later.
+
+4. **Scaffold the framework files**, using this plugin's bundled
+   `templates/` as the source for anything with placeholders, and its
+   `schemas/`/`scripts/`/`hooks/` directories verbatim for everything else:
+   - `.sdlc/project.yaml` — from `templates/project.yaml.template`, filled
+     in with the answers above. Always start `path_enforcement.enforce:
+     true`. Leave `budgets` at the template's conservative defaults unless
+     the user asks to change them.
+   - `.sdlc/state.json` — an empty skeleton: `{"schema_version": "1.0.0",
+     "work_items": []}`.
+   - `docs/sdlc/schemas/*.json` — copy this plugin's `schemas/*.json`
+     verbatim.
+   - `docs/sdlc/APPROVAL_RECORDS.md` — copy this plugin's
+     `templates/APPROVAL_RECORDS.md` verbatim, **only if release mode is
+     `full`**.
+   - `scripts/sdlc/generate-task-packet.mjs` and
+     `scripts/sdlc/validate-state.mjs` — copy this plugin's
+     `scripts/generate-task-packet.mjs` and `scripts/validate-state.mjs`
+     into that path (note the extra `sdlc/` directory level — the scripts
+     assume it). Immediately after copying, open
+     `scripts/sdlc/generate-task-packet.mjs`'s `KNOWN_DIRS` array and
+     replace the generic placeholder entries with this project's *real*
+     source directories (check its actual layout — `src/`, `backend/`,
+     `packages/*/src`, whatever it really has) — this is the single
+     highest-value edit for making generated task packets useful, and
+     skipping it is a common way this framework disappoints on first use.
+   - **Path-enforcement hook.** Prefer relying on this plugin's own bundled
+     hook (`hooks/hooks.json` + `hooks/sdlc-path-check.mjs`) if this Claude
+     Code build wires plugin-provided hooks into a project automatically —
+     you can check by looking for any plugin-hook-listing surface this
+     build exposes, or by asking the user to confirm after a quick test
+     edit-and-deny check with a throwaway implementer spawn. If you can't
+     confirm it's live, use the robust fallback instead: copy this
+     plugin's `hooks/sdlc-path-check.mjs` to
+     `.claude/hooks/sdlc-path-check.mjs` in this repo, and write (or merge
+     into an existing) `.claude/settings.json` a `PreToolUse` hook entry
+     matching `Edit|Write|NotebookEdit` that runs
+     `node "$CLAUDE_PROJECT_DIR/.claude/hooks/sdlc-path-check.mjs"`. If
+     `.claude/settings.json` already has other hooks configured, merge
+     rather than overwrite — read it first.
+   - **CLAUDE.md.** If the project has no `CLAUDE.md`, create one from
+     this plugin's `templates/CLAUDE_MD_SNIPPET.md`. If it already has one,
+     append that same snippet's content as a new section (don't touch
+     anything already there) — ask the user first if the existing
+     `CLAUDE.md` is large/opinionated enough that a blind append seems
+     likely to read oddly.
+   - **Supervisor runbook**, only if release mode is `full`: copy this
+     plugin's `templates/SUPERVISOR_RUNBOOK.template.md` to
+     `docs/SUPERVISOR_RUNBOOK.md`, filling in the branch names and live
+     systems from the answers above. This will still need the user (or a
+     later, deliberate task) to fill in the actual commands for their real
+     live systems — say so plainly rather than inventing plausible-looking
+     commands for systems you don't actually know.
+   - **Backlog/progress files**, only if they don't already exist at the
+     paths decided in step 2: create minimal skeletons (a legend + empty
+     table for `PROGRESS.md`, an empty numbered list with a short header
+     explaining the status vocabulary for `BACKLOG.md`).
+
+5. **Tell the user plainly what you scaffolded and what still needs a human
+   pass** (the runbook's real commands, the `KNOWN_DIRS` customization, any
+   hook-wiring uncertainty you couldn't resolve) before continuing. Don't
+   commit these files yourself — let the user review a first-time
+   framework setup before it's part of history; suggest they commit once
+   satisfied.
+
+6. Continue into "Orient" below — initializing is not the finish line,
+   same as scaffolding new work isn't.
+
+---
+
+## Orient — what's already moving?
+
+Check, in order, and stop at the first one that gives you a clear answer:
+
+1. **`$ARGUMENTS`.** Everything typed after the command name arrives here
+   as free text — it can be as terse as a task ID (`L2.1`) or branch name,
+   or a full sentence of steering context: "work on backlog item 4, there's
+   a draft design spec at `docs/proposals/x/DESIGN_SPEC.md` on
+   `feature/x`, pick up from there." Parse it for whatever's actually in
+   it — a backlog item reference, a branch to check out, a specific
+   document to read (an existing draft spec/plan, even an unfinished one
+   not yet following this project's usual proposal layout), explicit scope
+   or priority guidance, anything the user chose to tell you up front. Act
+   on all of it rather than pattern-matching only the first identifier you
+   recognize and discarding the rest. If it references a document, read
+   that document as part of orienting, before deciding what to do next —
+   don't ask the user to re-explain something they already pointed you at.
+   If it references a branch or backlog item that doesn't actually exist,
+   stop and ask rather than guessing what they meant; if it's ambiguous
+   which of several matches they mean, ask instead of picking one. Once
+   `$ARGUMENTS` has pointed you at a target, skip straight to step 1 below
+   with it (or straight to "Scaffold new work" if it's clearly pointing at
+   new/not-yet-tracked work, like a draft spec that has no `PROGRESS.md`
+   yet).
+2. **Unmerged feature branches.** If `.sdlc/project.yaml`'s `release.mode`
+   is `full`, run `git branch --no-merged <integration_branch>` (the branch
+   named in `release.integration_branch`) — this project's default
+   integration branch is not necessarily its production branch (see that
+   file, and this project's own `CLAUDE.md` if it documents the
+   rationale); the production branch should only ever gain commits via an
+   explicitly-approved promotion, never a feature branch directly. In
+   `lite` mode, just run `git branch --no-merged <default branch>`. For
+   each unmerged branch, check whether it has a
+   `docs/proposals/<slug>/PROGRESS.md` — if so, that file's task table is
+   the source of truth for whether it's actually still in progress (has any
+   `todo`/`in-progress`/`blocked` row) or just merged-pending-cleanup /
+   fully done-but-unmerged.
+3. **Root `PROGRESS.md`'s Post-Launch table** (or equivalent — whatever
+   this project's root progress tracker calls its lightweight
+   non-phased-work section). Any row marked `todo`/`in-progress`/`blocked`
+   is in-flight work that never got a full proposal folder.
+4. **Uncommitted or stashed changes** on the current branch — `git status`,
+   `git stash list`. If there's real in-progress work sitting there
+   unstaged/uncommitted, that's a strong signal too; don't ignore it in
+   favor of switching to something else without at least flagging it to the
+   user.
+
+Collect everything you find. If there's exactly one clear candidate, resume
+it (go to step 1 of "Resume in-progress work" below). If there are several,
+ask the user which one via `AskUserQuestion` rather than guessing priority.
+If there's genuinely nothing in flight, move to "Pick new work" below.
+
+---
+
+## Resume in-progress work
+
+This mirrors what a proposal-specific supervisor command already does —
+apply the same loop generically.
+
+**Load full context once.** Unlike the subagents you delegate to (see
+"Delegate" below, which deliberately get only a narrow task packet), *you*
+— the orchestrator — need the whole picture: cross-task drift, a change
+that's locally correct for one task but globally wrong for the plan, an
+acceptance criterion elsewhere in the plan that a single task's own Notes
+don't mention. Reading only a task's own narrow slice (the old approach)
+was the wrong economy for this role — narrow-context discipline belongs to
+what you hand a subagent, not to what you read yourself.
+
+1. Checkout the branch if you're not already on it (if the branch doesn't
+   exist despite tracking docs referencing it, stop and ask the user — do
+   not create it yourself in this situation, something is inconsistent).
+2. Determine which tracking convention this work uses: does
+   `.sdlc/state.json` contain a `work_items[].id` matching it? If so, this
+   is **sdlc-tracked** work. If not — likely true for most early work in a
+   freshly initialized project, e.g. anything under
+   `docs/proposals/<slug>/` — this is a **legacy proposal-folder** work
+   item, tracked entirely via its own
+   `DESIGN_SPEC.md`/`IMPLEMENTATION_PLAN.md`/`PROGRESS.md`, with no
+   corresponding `.sdlc/state.json` entry. Don't add one just to unify
+   this — migrating every proposal folder onto `.sdlc/state.json` is a
+   separate, not-yet-decided piece of work and out of scope here.
+3. Read, in full, once for this run:
+   - **sdlc-tracked**: the complete `docs/sdlc/design-spec.md` (if this
+     project has one), the complete `docs/sdlc/IMPLEMENTATION_PLAN.md`,
+     and the complete `.sdlc/state.json`.
+   - **legacy proposal-folder**: the complete
+     `docs/proposals/<slug>/DESIGN_SPEC.md`, the complete
+     `docs/proposals/<slug>/IMPLEMENTATION_PLAN.md`, and the complete
+     `docs/proposals/<slug>/PROGRESS.md` — this convention's task table and
+     session log already are the state; there is no separate state file to
+     additionally read.
+4. Don't re-read these documents before every task you pick within this
+   same run — that's the redundant-reread failure mode this replaces the
+   old narrow-read instruction with. Rely on Claude Code's own
+   changed-on-disk tracking: it will tell you when a file you've already
+   read has since changed on disk, and that notice — or a subagent's report
+   saying it touched one of these docs, or any other concrete signal — is
+   your cue to re-read that specific document, and only that one. Absent
+   such a signal, treat the copy you loaded in step 3 as still current;
+   don't re-open it "just in case" before picking the next task.
+5. Pick the task: the one `$ARGUMENTS` named, or the first `todo` task in
+   the table you already loaded, respecting phase order and each row's
+   `Notes` dependency.
+6. If the task's Notes flag a dependency that isn't `done`, or something
+   only the user can decide (a visual taste call not already settled by the
+   design spec, access to real hardware, credentials, an ambiguous product
+   decision), stop and ask the user rather than guessing or stubbing around
+   it.
+7. Delegate, verify, track, and continue/stop exactly per the **"Delegate →
+   Verify → Track → Continue-or-stop" loop** below.
+
+---
+
+## Pick new work (nothing was in progress)
+
+### If the backlog has actionable items
+
+Read this project's backlog file (per `.sdlc/project.yaml` or wherever it
+was placed during init — default `BACKLOG.md` at repo root). For each item,
+note its status (`idea`/`needs research`/`ready`/`in progress`/`done`) —
+`in progress` items should already have been caught in Orient step 2/3
+above via their branch/tracking docs; if one wasn't, treat that as a sign
+its tracking is stale and flag it to the user rather than silently trusting
+the backlog label.
+
+Present the actionable items (`idea`, `needs research`, `ready` — skip
+`done`) to the user with `AskUserQuestion` and ask which to work on. Since
+that tool allows at most 4 options, pick the up-to-4 most clearly
+actionable/impactful items as options (favor `ready` over `idea`, and
+smaller/less ambiguous scope over open-ended research items, since those
+convert into working software faster) and mention in the question text how
+many more exist beyond those shown. The user can always answer with
+something else via the tool's built-in free-text option.
+
+If the user picks a `needs research` item, do the research first (as a
+normal step, not a subagent-delegated one — this needs your own judgment
+and probably some web/codebase investigation) and update the backlog entry
+with findings before scaffolding implementation.
+
+Whenever the chosen item's analysis file is missing or still says "not yet
+written" (see the backlog file's own "Analysis files" section, if it has
+one), writing it is the first unit of work — before research-only follow-up,
+before a design spec, before any code. That means genuinely scrutinizing the
+entry rather than transcribing it: what problem it actually solves, whether
+it's worth the cost, whether a simpler/different approach reaches the same
+goal, and whether it's a good idea at all — a backlog entry is someone's raw
+idea, not a pre-approved plan. Once you have an initial read on those
+questions, **stop and check in with the user via `AskUserQuestion` (or a
+direct question, if free-form reaction fits better) before writing the
+analysis file's final version** — share your assessment and any
+alternatives you found, and let them confirm, correct, or redirect. Only
+then finalize `analysis/NN-slug.md`. Don't skip this checkpoint just
+because the item seems obviously fine — that's exactly the case where a
+rubber-stamped analysis is least useful.
+
+### If the backlog is empty or has nothing actionable
+
+Do a lightweight analysis of the project to surface real candidates —
+don't invent busywork. Useful sources, pick what's relevant to this
+project's shape:
+- The root progress tracker's Open Questions / known-gaps notes — anything
+  marked as a deferred gap, "worth revisiting," or an accepted tradeoff.
+- `grep`-able `TODO`/`FIXME`/`HACK` comments in the codebase.
+- Stale or contradictory documentation (a doc describing behavior the code
+  no longer has).
+- Missing test coverage in an area that's changed a lot recently
+  (`git log` churn vs. test file presence).
+- Anything a recent session log entry flagged as a follow-up but never
+  turned into a backlog item.
+- If this is a user-facing app: obvious UX rough edges you can find by
+  actually running it (a genuinely quick pass, not a full audit).
+
+Turn what you find into 2-4 concrete, scoped backlog-item candidates (not
+vague "improve performance" — something you could actually write an
+implementation plan for). Add them to the backlog file under this
+project's existing item-numbering convention (or start one, if this is a
+freshly initialized project with no convention yet), status `idea`. Then
+present them to the user via `AskUserQuestion` exactly as in the
+"actionable items" case above — proposing them is not the same as deciding
+to build them; the user picks.
+
+If the user declines everything you found, that's a valid outcome — stop
+and say so rather than pushing a pick.
+
+---
+
+## Scaffold new work
+
+Once a specific piece of work is chosen (from the backlog, or freshly
+proposed and approved), set it up before delegating any implementation:
+
+1. **Judge the size.** Small, well-scoped, low-ambiguity (a bug fix, a
+   single well-understood feature, "add X the same way Y already works")
+   doesn't need the full design-spec ceremony. Multi-component,
+   architecturally significant, or genuinely ambiguous work does. When in
+   doubt, undersize the ceremony rather than oversize it — a plan can grow
+   a design-spec step later if it turns out to need one, but a skipped
+   trivial fix shouldn't grow bureaucracy it doesn't need.
+
+2. **Branch.** Create (or reuse, if one already exists for this item)
+   `feature/<slug>` off this project's integration branch (`full` mode) or
+   its default branch (`lite` mode). Everything for this work lives on that
+   branch until it ships — don't work on the integration/production
+   branch directly for anything beyond the smallest one-file fix.
+
+3. **Design spec (only for the "significant" tier).** Follow this
+   project's existing proposals convention if it has one (check for a
+   `docs/proposals/README.md` or equivalent process doc and follow it
+   exactly — branch naming, file layout, and the human-review checkpoint
+   it describes). If none exists yet, establish a minimal one: write
+   `docs/proposals/<slug>/DESIGN_SPEC.md`: goals, non-goals, requirements,
+   constraints, open questions — no file/class/API-level detail. **Stop
+   here and get human review/sign-off on the design spec before writing the
+   implementation plan** — this is a genuine judgment-call gate, not a
+   formality to rubber-stamp past. Skip this whole step for the "small"
+   tier — go straight to the implementation plan.
+
+4. **Implementation plan.** Write `docs/proposals/<slug>/IMPLEMENTATION_PLAN.md`
+   (or, for small work with no proposal folder, just enough of a task
+   breakdown to hand to subagents — even a short flat list is fine; it
+   doesn't need its own file if the work is a single task). Break the work
+   into scoped tasks with IDs and acceptance criteria, phased only if the
+   work genuinely decomposes into stages with real dependencies between
+   them (foundation → feature → polish → verification, etc.) — a flat task
+   list is better than invented phases for anything that doesn't need them.
+   Mirror this project's existing ID conventions if it has one (e.g.
+   `P<n>.<n>`, `L<n>.<n>`) or pick a short new phase-letter/prefix that
+   doesn't collide with ones already in use.
+
+5. **Progress tracking.** Write `docs/proposals/<slug>/PROGRESS.md` (or add
+   a row to the root progress tracker's lightweight section for small
+   work) — the task table and session log that the rest of this command's
+   loop reads from. Follow the same table/session-log shape used elsewhere
+   in this project's tracking docs, for consistency.
+
+6. Immediately continue into the **"Delegate → Verify → Track →
+   Continue-or-stop" loop** below — per the user's intent for this command,
+   setting up the framework is not the finish line, driving it forward is.
+
+---
+
+## Delegate → Verify → Track → Continue-or-stop loop
+
+This is the actual work loop, used identically whether you're resuming
+existing work or driving freshly-scaffolded new work.
+
+### Delegate
+
+Which mechanism you use depends on which tracking convention the task
+belongs to (see "Resume in-progress work" step 2 above for how to tell
+sdlc-tracked from legacy proposal-folder work). The two paths are
+deliberately different — do not blend them.
+
+#### Legacy proposal-folder work (no `.sdlc/state.json` entry)
+
+For the chosen task (or a small batch of independent tasks — check
+dependency notes first), spawn one subagent per task using the Agent tool
+(`subagent_type: general-purpose`, run in the background unless you have
+nothing else to do while waiting). Independent tasks in one batch go in a
+single message with multiple Agent calls.
+
+Each subagent prompt must be **self-contained** and **narrow**:
+- State the task ID and paste its full scope + acceptance criteria text
+  (don't tell the subagent to go read the plan file itself).
+- Paste the specific design-spec excerpt it needs, if any (don't tell it to
+  go read the whole spec).
+- Confirm which branch it's working on and list the specific files it
+  should create or touch, inferred from the task text and this project's
+  layout.
+- Say explicitly: implement only this task's scope, don't expand it, don't
+  touch the plan/progress/spec docs (you own those), and report back
+  concisely — what it built, any decisions it had to make, and how it
+  verified the acceptance criteria.
+- Tell it to run typecheck/build/tests (whatever this project uses) and
+  report the result rather than just asserting success. For a visual/UI
+  task, tell it to verify per this project's own preview-tool conventions
+  (e.g. `<when_to_verify>`/`<verification_workflow>` if defined) rather
+  than asserting the result looks right — and to fall back to
+  DOM/computed-style inspection via the browser tool's JS-execution
+  capability if screenshot compositing isn't available in its session
+  (a real, recurring limitation — don't let a subagent claim visual
+  confirmation it didn't actually get).
+
+Do not let a subagent read the plan/progress/spec docs — everything it
+needs should already be in the prompt you wrote. This keeps subagent
+context small and prevents drift/scope creep.
+
+#### sdlc-tracked work (`.sdlc/state.json` has this task)
+
+This path uses the sdlc-supervisor framework's task-packet + `implementer`
+subagent mechanism instead of `general-purpose`. Follow it exactly, one
+task at a time — never batch multiple sdlc-tracked tasks into concurrent
+implementer spawns, even when their dependency notes would otherwise allow
+it, unless `.sdlc/project.yaml`'s `budgets.max_concurrent_implementers` is
+greater than 1 (the default is `1`, and only one `.sdlc/active-packet`
+pointer can exist per shared working tree — see below).
+
+1. **Require a clean working tree first.** Run `git status --porcelain`.
+   If it produces any output, stop — do not spawn an implementer. The
+   implementer agent runs directly in this shared working tree (unless
+   this project has set up worktree isolation), not an isolated worktree,
+   so a dirty tree is the one thing standing between its edits and
+   whatever uncommitted work (yours or the user's) is already sitting
+   there. Surface the dirty state to the user and let them decide (commit,
+   stash themselves, or explain what it is) rather than proceeding around
+   it.
+2. **Generate the task packet.** Run
+   `scripts/sdlc/generate-task-packet.mjs` with `--task-id`,
+   `--plan-entry-file`, and, if relevant, `--design-excerpt-file`/
+   `--dependencies` (see the script's own header comment for exact usage).
+   This writes `.sdlc/task-packets/<task_id>.packet.json`.
+3. **Review and correct the generated packet before using it — do not
+   trust it as-is.** The generator's `read_paths`/`write_paths` inference
+   is a documented, honest heuristic operating purely on input text, not
+   real code/semantic understanding, and its `KNOWN_DIRS` list only knows
+   what it was told this project's real layout looks like (see the init
+   step above — if that list was never customized for this project, expect
+   worse-than-normal results). Read through every field — `read_paths`,
+   `write_paths`, `forbidden_paths`, `acceptance_criteria`,
+   `verification_commands` — and fix anything wrong. In particular:
+   - If the packet contains the literal string `"NEEDS_MANUAL_REVIEW"`
+     anywhere, it is not ready — fill in the real paths by hand.
+   - If any path is plainly wrong on inspection (missing leading `.`,
+     wrong directory, a read-only doc listed as writable, etc.), fix it by
+     hand.
+   - When the heuristic's output needs substantial correction, it's fine
+     to just write the packet file directly (matching
+     `docs/sdlc/schemas/task-packet.schema.json`) instead of patching the
+     generated one field-by-field.
+   Never hand an implementer a packet you haven't actually reviewed.
+4. **Write the active-packet pointer.** Before spawning, write
+   `.sdlc/active-packet` in the repo root containing exactly the task's id
+   and nothing else (a single line, e.g. `SS4.2`). The path-enforcement
+   hook denies every `Edit`/`Write` call from the implementer unless it can
+   resolve exactly one active packet, and this pointer file is the
+   mechanism that resolves it for a single implementer running in the
+   shared tree. Leave it in place for the duration of that implementer's
+   work.
+5. **Spawn the implementer.** Use the Agent tool with
+   `subagent_type: implementer` (never `general-purpose` for sdlc-tracked
+   work). Paste the **full packet JSON verbatim** into the spawn prompt —
+   the implementer agent's own instructions say every invocation hands it
+   exactly one task packet pasted into its prompt at spawn time; it does
+   not read the packet file itself, and by its own rules it never reads
+   `docs/sdlc/IMPLEMENTATION_PLAN.md`, `docs/sdlc/design-spec.md`, or
+   `docs/sdlc/PROGRESS.md` directly. Don't tell it to go read the plan —
+   that's not how it's built to work, and doing so wastes the turn on a
+   refusal or a scope violation.
+6. **Resuming, not restarting, a blocked or interrupted implementer.** If
+   an implementer's completion report is `blocked`, or a run gets
+   interrupted mid-task and needs to continue, resume it with
+   `SendMessage` addressed to that exact agent's own id — it already has
+   the full packet and context in its memory. Never spin up a brand-new
+   `Agent` call that merely asserts prior progress ("you already did X,
+   now do Y") — a fresh agent has no legitimate basis to verify such a
+   claim and will correctly refuse it, wasting the spawn. If the original
+   agent is genuinely gone (session ended, its id lost), the correct
+   recovery is a brand-new `Agent` spawn with the complete packet pasted
+   inline again, as a fresh attempt — never a message asserting
+   unverifiable prior progress to a new agent.
+7. **Scope-change requests are yours to judge, not auto-approve.** A
+   completion report with `status: scope_change_requested` means the
+   implementer determined it needed to read or write outside the packet's
+   declared paths. You — not the implementer — have the full plan context
+   needed to judge whether that's a real gap in the task's scope or the
+   implementer overreaching. Never auto-approve it into more implementer
+   work, and never silently ignore it either; decide on the merits and act
+   (widen the packet and re-spawn/resume, or push back) accordingly.
+8. **Drafting, not activating, expertise skills.** You may freely write a
+   one-run inline instruction into an implementer's spawn prompt any time
+   — no review needed, and it dies with that run if not reused. If you
+   notice the *same* one-run instruction recurring across multiple tasks,
+   you may draft (write to disk, but not enable, reference, or otherwise
+   activate) a project-local expertise-skill file capturing it. Drafting
+   is not activating: turning a drafted skill into something actually used
+   in a run, or committing it into the project, requires a human check-in
+   first — the same tier as a design-spec sign-off. Never activate a
+   drafted skill unilaterally just because you drafted it.
+9. **Retire the pointer once the task is settled.** After the task's
+   completion report has been accepted (see Verify/Update-tracking below),
+   delete `.sdlc/active-packet` so it doesn't linger and get mistaken for
+   the next task's active packet. If the task is instead abandoned or left
+   blocked, still remove or overwrite the pointer once you've decided what
+   happens next — don't leave a stale pointer sitting there into the next
+   task.
+
+This mechanism is specific to sdlc-tracked work. Legacy proposal-folder
+work keeps using the `general-purpose` path above unchanged — the
+`implementer` agent is not (yet) a generic delegate target for arbitrary
+proposal folders.
+
+### Verify
+
+When a subagent reports back, don't take "done" on faith. First decide
+which verification tier this task gets — the routing decision below comes
+*before* the spot-check, not instead of it.
+
+**Decide whether this task needs the verifier agent.** Most tasks don't —
+for those, skip straight to "Default path (no verifier)" below and proceed
+exactly as before. A task requires spawning the separate `verifier` agent,
+not just your own spot-check, when it touches any of:
+
+- **The fixed floor** (`.sdlc/project.yaml`'s
+  `verification_profile.floor_triggers`): authentication/authorization,
+  data persistence or migrations, deployment/release tooling, or anything
+  at the production-mutation tier or above.
+- **This project's widened categories** (`verification_profile.widen`):
+  whatever this specific project's own real risk areas are — filled in
+  during init or added later by hand.
+
+This floor is a minimum — a project can widen it (by adding entries to
+`project.yaml`'s `widen` list) but this command's routing logic itself must
+never narrow it below the fixed `floor_triggers`. If a future edit to
+`project.yaml` adds another `widen` category, that alone should be enough
+to route more tasks to the verifier — no corresponding edit to this file
+should be needed.
+
+Which bucket a task falls into is **your own judgment call, applied
+per-task** — not a mechanical grep or automated classifier. Look at the
+task's objective/description and its packet's (or, for legacy
+proposal-folder work, its task-table row's) `write_paths`/`read_paths` for
+anything that plainly falls into one of the floor/widen categories: auth or
+token/credential logic, a database or persistence migration, CI/CD or
+deploy tooling, `agents/supervisor.md` or any supervisor-only remote
+operation, or anything referencing a live external system. This applies
+identically to sdlc-tracked and legacy proposal-folder work — `verifier.md`
+isn't restricted to sdlc-tracked packets the way `implementer.md` is; for
+legacy work, assemble its inputs ad hoc from the proposal's own task-table
+row, a `git diff`, and test output, without needing any `.sdlc/*`
+machine-state files. When genuinely unsure whether a task qualifies, err
+toward routing it to the verifier — spawning it unnecessarily costs one
+extra subagent run, but missing a real hit here often isn't caught until
+much later, if ever.
+
+**Strong-verification path (task is in the floor/widen tier).** After the
+implementer's completion report comes back:
+1. Gather exactly the three inputs `verifier.md` requires and nothing
+   else: the task packet JSON (or, for legacy work, the assembled
+   equivalent), the actual diff (`git diff`/`git show` output for the
+   implementer's changes), and the output of running the packet's
+   `verification_commands` (or equivalent test/build output). Optionally
+   add any task-specific architectural invariants beyond `CLAUDE.md`'s
+   standing list. Never paste in the implementer's own completion-report
+   JSON or reasoning — `verifier.md` is explicit that it must not be given
+   that.
+2. Spawn `subagent_type: verifier` (never `general-purpose`) with those
+   inputs pasted into the prompt.
+3. Treat the verifier's returned verdict as the actual verification
+   outcome for this task, not merely advisory alongside your own
+   spot-check: a verifier `fail` means the task is not accepted as done,
+   exactly as if your own spot-check had found the same gap. Act on its
+   per-criterion findings, forbidden-path check, and architectural-invariant
+   findings the same way you'd act on your own.
+4. For any acceptance criterion the verifier reports as `uncertain`, apply
+   the same judgment you already apply to your own uncertain findings —
+   record it explicitly in the tracking notes, don't silently round it to
+   pass.
+5. Still do the cheap checks below yourself where they add something the
+   verifier didn't cover (e.g. a quick browser check for a UI-adjacent
+   change) — the verifier replaces the *authority* of your spot-check for
+   this task's acceptance-criteria/forbidden-path verdict, it doesn't
+   replace all the ordinary follow-up you'd otherwise do.
+
+**Default path (no verifier).** For a task outside the floor/widen tier,
+proceed exactly as before — do not spawn a verifier for it:
+- Spot-check the actual diff it produced against the acceptance criteria
+  you gave it.
+- Run anything cheap yourself if the subagent didn't already (typecheck, a
+  quick browser check).
+- If it's short of the mark, send it a follow-up via SendMessage with the
+  specific gap, or fix it inline yourself if trivial (the one exception to
+  "you don't write application code" — a small, precise correction to
+  something a subagent got wrong is in scope for you directly).
+- If a subagent's own verification method has a known blind spot (e.g.
+  DOM/computed-style inspection can confirm dimensions but can't catch
+  something that only looks wrong to a human eye scanning the whole page),
+  say so explicitly in the tracking notes rather than overstating
+  confidence — and take the user's own manual testing seriously as a
+  distinct, higher-fidelity verification pass if they offer it.
+
+### Update tracking
+
+Once a task is genuinely done:
+- Update its row in the relevant `PROGRESS.md`'s task table to `done`, with
+  a one-line note if there's anything a future session should know.
+- Append a session-log entry (newest on top) — what got done, what's next,
+  anything non-obvious.
+- If the task surfaced a new open question or blocker, record it.
+- Stage and commit the task's changes with a message referencing the task
+  ID, on the feature branch. Don't push, don't merge it yourself — if this
+  project is in `full` release mode, that's the supervisor role's job
+  (`agents/supervisor.md`), not yours, regardless of which tier is
+  involved. If this project is in `lite` mode, commit and stop there — the
+  user merges/releases by hand. Don't commit if the working tree is
+  unexpectedly messy — investigate first.
+  - In `full` mode: merging this feature branch into the integration
+    branch and pushing it is a routine step the supervisor takes once the
+    *whole* body of work (not just one task) is done and verified — see
+    "Continue or stop" below. It doesn't need a fresh go-ahead from the
+    user each time, unlike promoting the integration branch into the
+    production branch, which still does.
+
+### Continue or stop
+
+Move to the next `todo` task and repeat, batching independent tasks where
+dependency notes make it safe (legacy proposal-folder work only — see
+"Delegate" above for why sdlc-tracked work never batches beyond
+`max_concurrent_implementers`). Whether to keep going or stop is governed
+by the run budgets in `.sdlc/project.yaml`'s `budgets` block, plus a fixed
+set of unconditional stop conditions — read this file at the top of the
+loop and whenever you need to check a limit; never hardcode the numbers
+below into your own reasoning, since a future edit to `project.yaml` should
+change this loop's behavior without a matching edit here. These budgets
+apply to the run as a whole, regardless of which tracking convention the
+current task uses — `.sdlc/project.yaml` is a single repo-wide file, not
+one per work item, so it paces sdlc-tracked and legacy proposal-folder work
+identically. (This is a different axis from the Delegate section's
+task-packet/implementer mechanism, which genuinely is sdlc-tracked-only —
+don't conflate the two.)
+
+**Task-count budget.** Keep a plain running count, in your own working
+context for this session, of how many tasks you've completed this run —
+this is in-session bookkeeping only, not a new persisted field (`.sdlc/state.json`
+already tracks per-task status, not a run-level tally). Once that count
+reaches `budgets.max_tasks_per_run`, stop, regardless of how much budget
+headroom or momentum remains. This is the concrete, numeric replacement
+for "don't grind through every remaining task unattended in one go": the
+trigger is a number read from config, not a judgment call about what
+counts as a "substantial batch."
+
+**Per-task and per-verifier attempt budgets.** `budgets.max_attempts_per_task`
+caps how many times a single task gets retried before you stop retrying it
+automatically and escalate to your own judgment instead — treat that
+escalation the same as hitting a genuine blocker (surface it to the user
+rather than spawning attempt after attempt). For sdlc-tracked work, track
+attempts via `.sdlc/state.json`'s `lease.attempt_count` for that task; for
+legacy work, which has no such field, keep an in-session count yourself.
+Separately, when the verifier-routing path is in play,
+`budgets.max_verifier_retries` caps how many times you re-send a task back
+against the verifier after a `fail` verdict — once a task hits that count,
+stop retrying it against the verifier and escalate rather than looping
+indefinitely.
+
+**Token/time budget (soft).** `budgets.token_or_time_budget.minutes` (and
+`.tokens`, if set — it may be `null`, meaning not tracked) is a soft
+budget: keep only a rough, approximate sense of it over the run — e.g.
+noticing that a run has clearly gone long relative to the configured
+minutes — and log/flag it if it looks like you're exceeding it. This is
+never a hard stop condition: Claude Code has no clean mid-run cutoff
+primitive to enforce it with, so don't overstate the precision here.
+
+**Unconditional stop conditions.** Stop regardless of remaining budget
+headroom when any of these correctness/safety triggers fire:
+- A phase boundary is reached.
+- Plan divergence: a subagent's actual change doesn't match what the
+  plan/design expected — a locally-plausible change that's globally wrong.
+- An unexpected file gets touched outside every currently-open task's
+  `write_paths` — a scope-drift signal even if the hook/verifier didn't
+  already catch it.
+- A test regression: something that passed before a task now fails.
+- An acceptance-criteria ambiguity that genuinely isn't this task's to
+  resolve — it needs a product/design decision only the user can make.
+- You hit a genuine blocker (a decision only the user can make, a
+  real-hardware/credential/access dependency) — same tier as an
+  exhausted per-task/per-verifier attempt budget above.
+- In `full` release mode: the work is fully done and the only remaining
+  step is **promoting the integration branch into the production
+  branch** — treat that specifically as a stopping point requiring
+  explicit go-ahead, not something to do automatically just because
+  everything upstream of it succeeded. This is *not* the same as merging a
+  finished feature branch into the integration branch: that step is
+  routine (see below) and does not itself trigger this stop condition.
+- In `lite` release mode: the work is fully done and committed to a
+  feature branch — that itself is the stopping point (there is no
+  supervisor merge step at all in this mode).
+
+**In `full` mode, the integration-branch merge is not a stop condition.**
+Once a body of work's tasks are all done and verified, dispatch to a
+`supervisor` agent to merge the feature branch into the integration branch
+and push it, as the normal way the work wraps up — this is
+standing-authorized once a project has adopted `full` release mode, and
+needs no fresh go-ahead or approval record (see `agents/supervisor.md`'s
+"Two merge tiers"). Continue the run after that merge lands rather than
+stopping, unless some other stop condition on this list fires. Only the
+later integration→production promotion is the user's call.
+
+**Otherwise, continue automatically.** Absent an exhausted budget or a
+fired stop condition above, move on to the next task without pausing to
+ask — that's what makes these budgets a real replacement for a vague
+"substantial batch" judgment call rather than just another check sitting
+alongside one.
+
+**End every stopping point with:**
+1. A short summary: tasks completed this run (with task IDs), current
+   overall status against the full task table, and anything non-obvious a
+   fresh session would need to know.
+2. A ready-to-use prompt for continuing in a **fresh session** — since
+   tracking docs always reflect current state, this is simply:
+
+   > `/continue-development` (no branch-switching needed — it auto-detects
+   > in-progress work)
+
+   If you stopped mid-task or on a specific blocker, name it explicitly
+   instead so the next session doesn't have to rediscover it, e.g.
+   `/continue-development L2.1`.

@@ -1,0 +1,11 @@
+{
+  "name": "sdlc-supervisor",
+  "version": "0.1.0",
+  "description": "Backlog -> analysis -> design -> task-packet implementation -> verification -> supervised merge/release workflow for Claude Code, driven by one command: /continue-development.",
+  "author": {
+    "name": "McFrenchPants"
+  },
+  "commands": "./commands",
+  "agents": "./agents",
+  "hooks": "./hooks/hooks.json"
+}
