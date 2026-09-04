@@ -4,6 +4,5 @@
   "description": "Backlog -> analysis -> design -> task-packet implementation -> verification -> supervised merge/release workflow for Claude Code, driven by one command: /continue-development.",
   "author": {
     "name": "McFrenchPants"
-  },
-  "hooks": "./hooks/hooks.json"
+  }
 }
