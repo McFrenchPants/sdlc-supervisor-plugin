@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "sdlc-supervisor",
-      "source": "./",
+      "source": "../",
       "description": "Backlog -> analysis -> design -> implementation -> verification -> supervised release workflow, driven by /continue-development."
     }
   ]
